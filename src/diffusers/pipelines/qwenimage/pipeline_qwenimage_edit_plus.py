@@ -251,9 +251,16 @@ class QwenImageEditPlusPipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
         drop_idx = self.prompt_template_encode_start_idx
         txt = [template.format(base_img_prompt + e) for e in prompt]
 
+        # Every prompt in the batch carries its own copy of the image placeholders, so the flat list handed to the
+        # processor has to repeat the condition image(s) once per prompt.
+        if image is None:
+            processor_images = None
+        else:
+            processor_images = (image if isinstance(image, list) else [image]) * len(txt)
+
         model_inputs = self.processor(
             text=txt,
-            images=image,
+            images=processor_images,
             padding=True,
             return_tensors="pt",
         ).to(device)
@@ -678,13 +685,9 @@ class QwenImageEditPlusPipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
         else:
             batch_size = prompt_embeds.shape[0]
 
-        # QwenImageEditPlusPipeline does not currently support batch_size > 1
-        if batch_size > 1:
-            raise ValueError(
-                f"QwenImageEditPlusPipeline currently only supports batch_size=1, but received batch_size={batch_size}. "
-                "Please process prompts one at a time."
-            )
-
+        # `image` holds the condition image(s) shared by every prompt in the batch, so a batched call applies the
+        # same reference image(s) to each prompt. Variable-length prompts are padded by `encode_prompt` and the
+        # padding is masked out in attention via `prompt_embeds_mask`.
         device = self._execution_device
         # 3. Preprocess image
         if image is not None and not (isinstance(image, torch.Tensor) and image.size(1) == self.latent_channels):
@@ -717,6 +720,16 @@ class QwenImageEditPlusPipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
             )
 
         do_true_cfg = true_cfg_scale > 1 and has_neg_prompt
+        if do_true_cfg and negative_prompt is not None:
+            if isinstance(negative_prompt, str):
+                negative_prompt = [negative_prompt] * batch_size
+            elif len(negative_prompt) == 1 and batch_size > 1:
+                negative_prompt = negative_prompt * batch_size
+            elif len(negative_prompt) != batch_size:
+                raise ValueError(
+                    f"`negative_prompt` has batch size {len(negative_prompt)}, but `prompt` has batch size"
+                    f" {batch_size}. Pass either a single negative prompt or one per prompt."
+                )
         prompt_embeds, prompt_embeds_mask = self.encode_prompt(
             image=condition_images,
             prompt=prompt,

@@ -189,6 +189,33 @@ class TestQwenImageEditPlusPipeline(QwenImageEditPlusPipelineTesterConfig, Pipel
     def test_inference_batch_single_identical(self):
         super().test_inference_batch_single_identical()
 
+    def test_batched_prompts_share_condition_images(self):
+        """A batch of prompts against the same condition image(s) must match running each prompt on its own.
+
+        `image` is the set of condition images shared by the whole batch; per-batch-element condition images are a
+        separate (unsupported) case, see `test_inference_batch_consistent`.
+        """
+        pipe = self.pipeline_class(**self.get_dummy_components()).to(torch_device)
+        pipe.set_progress_bar_config(disable=None)
+
+        prompts = ["a cat", "a dog wearing a very colourful striped hat"]
+
+        batched = self.get_dummy_inputs()
+        batched["prompt"] = prompts
+        batched["generator"] = [torch.Generator(device="cpu").manual_seed(i) for i in range(len(prompts))]
+        batched_out = pipe(**batched).images
+        assert len(batched_out) == len(prompts)
+
+        for i, prompt in enumerate(prompts):
+            single = self.get_dummy_inputs()
+            single["prompt"] = prompt
+            single["generator"] = [torch.Generator(device="cpu").manual_seed(i)]
+            single_out = pipe(**single).images
+            assert single_out.shape[0] == 1
+            assert_tensors_close(
+                torch.as_tensor(batched_out[i : i + 1]), torch.as_tensor(single_out), atol=1e-3, rtol=1e-3
+            )
+
     def test_true_cfg_without_negative_prompt_embeds_mask(self):
         pipe = self.pipeline_class(**self.get_dummy_components()).to(torch_device)
         pipe.set_progress_bar_config(disable=None)
